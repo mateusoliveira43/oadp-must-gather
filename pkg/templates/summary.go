@@ -46,7 +46,7 @@ Cluster capabilities
 
 <<OADP_VERSIONS>>
 
-## Restic version
+## File system information
 
 TODO
 
@@ -132,7 +132,7 @@ func ReplaceOADPOperatorInstallationSection(clusterServiceVersionList *operators
 			// other CSVs that should be important for us?
 			// dev? https://github.com/openshift/oadp-operator/blob/5601dcfd0a07468f496ddb70ab570ccff1b4f0cc/bundle/manifests/oadp-operator.clusterserviceversion.yaml#L598
 			if csv.Spec.DisplayName == "OADP Operator" {
-				oadpOperatorsText += fmt.Sprintf("Found '%v' version '%v' installed in '%v' namespace\n", csv.Spec.DisplayName, csv.Spec.Version, csv.Namespace)
+				oadpOperatorsText += fmt.Sprintf("Found '%v' version '%v' installed in '%v' namespace\n\n", csv.Spec.DisplayName, csv.Spec.Version, csv.Namespace)
 			}
 		}
 		if len(oadpOperatorsText) == 0 {
@@ -161,10 +161,7 @@ func ReplaceAvailableStorageClassesSection(path string, storageClassList *storag
 
 		storageClasses := ""
 		for _, storageClass := range storageClassList.Items {
-			storageClasses += fmt.Sprintf(
-				"Found '%v' StorageClass with\n- AllowVolumeExpansion %v\n- ReclaimPolicy %v\n- VolumeBindingMode  %v\n\n",
-				storageClass.Name, *storageClass.AllowVolumeExpansion, *storageClass.ReclaimPolicy, *storageClass.VolumeBindingMode,
-			)
+			storageClasses += fmt.Sprintf("Found '%v' StorageClass\n\n", storageClass.Name)
 			storageClassGVK := schema.GroupVersionKind{
 				Group:   "storage.k8s.io",
 				Version: "v1",
