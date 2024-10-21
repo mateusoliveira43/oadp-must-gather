@@ -137,6 +137,20 @@ TODO`,
 			}
 			// ----------------------------------------------------------------
 
+			// do this part in parallel? --------------------------------------
+			backupStorageLocationList, err := gather.AllBackupStorageLocations(clusterClient)
+			if err != nil {
+				fmt.Println(err)
+			}
+			// ----------------------------------------------------------------
+
+			// do this part in parallel? --------------------------------------
+			volumeSnapshotLocationList, err := gather.AllVolumeSnapshotLocations(clusterClient)
+			if err != nil {
+				fmt.Println(err)
+			}
+			// ----------------------------------------------------------------
+
 			// oc adm inspect --dest-dir must-gather/clusters/${clusterID} --all-namespaces ns/${ns}
 
 			// gather_logs
@@ -159,6 +173,8 @@ TODO`,
 			templates.ReplaceClusterInformationSection(path, clusterID, clusterVersion, infrastructure, nodeList)
 			templates.ReplaceOADPOperatorInstallationSection(path, clusterServiceVersionList)
 			templates.ReplaceDataProtectionApplicationsSection(path, dataProtectionApplicationList)
+			templates.ReplaceBackupStorageLocationsSection(path, backupStorageLocationList)
+			templates.ReplaceVolumeSnapshotLocationsSection(path, volumeSnapshotLocationList)
 			templates.ReplaceAvailableStorageClassesSection(path, storageClassList)
 			templates.ReplaceCustomResourceDefinitionsSection(path, clusterConfig)
 			// do not tar!

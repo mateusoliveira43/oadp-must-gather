@@ -25,6 +25,16 @@ var (
 		Version: "v1alpha1",
 		Kind:    "DataProtectionApplication",
 	}
+	BackupStorageLocationGVK = schema.GroupVersionKind{
+		Group:   "velero.io",
+		Version: "v1",
+		Kind:    "BackupStorageLocation",
+	}
+	VolumeSnapshotLocationGVK = schema.GroupVersionKind{
+		Group:   "velero.io",
+		Version: "v1",
+		Kind:    "VolumeSnapshotLocation",
+	}
 	StorageClassGVK = schema.GroupVersionKind{
 		Group:   "storage.k8s.io",
 		Version: "v1",

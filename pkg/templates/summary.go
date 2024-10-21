@@ -10,6 +10,7 @@ import (
 	openshiftconfigv1 "github.com/openshift/api/config/v1"
 	oadpv1alpha1 "github.com/openshift/oadp-operator/api/v1alpha1"
 	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
+	velerov1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -28,6 +29,8 @@ var (
 		"CLUSTER_ID", "OCP_VERSION", "CLOUD", "ARCH", "CLUSTER_VERSION",
 		"OADP_VERSIONS",
 		"DATA_PROTECTION_APPLICATIONS",
+		"BACKUP_STORAGE_LOCATIONS",
+		"VOLUME_SNAPSHOT_LOCATIONS",
 		// TODO NAC
 		"STORAGE_CLASSES",
 		"CUSTOM_RESOURCE_DEFINITION",
@@ -57,13 +60,17 @@ const summaryTemplate = `# OADP must-gather summary version <<MUST_GATHER_VERSIO
 
 <<OADP_VERSIONS>>
 
-### DataProtectionApplications
+### DataProtectionApplications (DPAs)
 
 <<DATA_PROTECTION_APPLICATIONS>>
 
-### BackupStorageLocations
+### BackupStorageLocations (BSLs)
 
-TODO
+<<BACKUP_STORAGE_LOCATIONS>>
+
+### VolumeSnapshotLocations (VSLs)
+
+<<VOLUME_SNAPSHOT_LOCATIONS>>
 
 ### Backups
 
@@ -238,19 +245,24 @@ func ReplaceDataProtectionApplicationsSection(path string, dataProtectionApplica
 			dataProtectionApplicationsByNamespace[dataProtectionApplication.Namespace] = append(dataProtectionApplicationsByNamespace[dataProtectionApplication.Namespace], dataProtectionApplication)
 		}
 
+		summaryTemplateReplaces["DATA_PROTECTION_APPLICATIONS"] += "| Namespace | Name | spec.unsupportedOverrides | status.conditions[0] | details |\n| --- | --- | --- | --- | --- |\n"
 		for namespace, dataProtectionApplications := range dataProtectionApplicationsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
 
+			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/dataprotectionapplications", namespace)
+			file := folder + "/dataprotectionapplications.yaml"
 			for _, dataProtectionApplication := range dataProtectionApplications {
 				dataProtectionApplication.GetObjectKind().SetGroupVersionKind(gvk.DataProtectionApplicationGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &dataProtectionApplication})
 
+				unsupportedOverridesText := "false"
 				if dataProtectionApplication.Spec.UnsupportedOverrides != nil {
 					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
 						"⚠️ DataProtectionApplication **%v** in **%v** namespace is using **unsupportedOverrides**\n\n",
 						dataProtectionApplication.Name, namespace,
 					)
+					unsupportedOverridesText = "⚠️ true"
 				}
 
 				dpaStatus := ""
@@ -273,26 +285,136 @@ func ReplaceDataProtectionApplicationsSection(path string, dataProtectionApplica
 					}
 				}
 
+				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["DATA_PROTECTION_APPLICATIONS"] += fmt.Sprintf(
-					"Found **%v** with **%v** in **%v** namespace\n\n",
-					dataProtectionApplication.Name, dpaStatus, namespace,
+					"| %v | %v | %v | %v | %s |\n",
+					namespace, dataProtectionApplication.Name, unsupportedOverridesText, dpaStatus, link,
 				)
 			}
 
 			// TODO permission
 			// TODO need defer somewhere?
-			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/dataprotectionapplications", namespace)
 			err := os.MkdirAll(path+folder, 0777)
 			if err != nil {
 				fmt.Printf("An error happened while creating folder structure: %v\n", err)
 				// TODO!!!!
 				continue
 			}
-			summaryTemplateReplaces["DATA_PROTECTION_APPLICATIONS"] += createYAML(path, folder+"/dataprotectionapplications.yaml", list)
+			createYAML(path, file, list)
 		}
 	} else {
 		summaryTemplateReplaces["DATA_PROTECTION_APPLICATIONS"] = "❌ No DataProtectionApplication was found in the cluster"
 		summaryTemplateReplaces["ERRORS"] += "⚠️ No DataProtectionApplication was found in the cluster\n\n"
+	}
+}
+
+func ReplaceBackupStorageLocationsSection(path string, backupStorageLocationList *velerov1.BackupStorageLocationList) {
+	if backupStorageLocationList != nil {
+		backupStorageLocationsByNamespace := map[string][]velerov1.BackupStorageLocation{}
+
+		for _, backupStorageLocation := range backupStorageLocationList.Items {
+			backupStorageLocationsByNamespace[backupStorageLocation.Namespace] = append(backupStorageLocationsByNamespace[backupStorageLocation.Namespace], backupStorageLocation)
+		}
+
+		summaryTemplateReplaces["BACKUP_STORAGE_LOCATIONS"] += "| Namespace | Name | spec.default | status.phase | details |\n| --- | --- | --- | --- | --- |\n"
+		for namespace, backupStorageLocations := range backupStorageLocationsByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/velero.io/backupstoragelocations", namespace)
+			file := folder + "/backupstoragelocations.yaml"
+			for _, backupStorageLocation := range backupStorageLocations {
+				backupStorageLocation.GetObjectKind().SetGroupVersionKind(gvk.BackupStorageLocationGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &backupStorageLocation})
+
+				bslStatus := ""
+				bslStatusPhase := backupStorageLocation.Status.Phase
+				if len(bslStatusPhase) == 0 {
+					bslStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ BackupStorageLocation **%v** with **no status phase** in **%v** namespace\n\n",
+						backupStorageLocation.Name, namespace,
+					)
+				} else {
+					if bslStatusPhase == velerov1.BackupStorageLocationPhaseAvailable {
+						bslStatus = fmt.Sprintf("✅ status phase %s", bslStatusPhase)
+					} else {
+						bslStatus = fmt.Sprintf("❌ status phase %s", bslStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ BackupStorageLocation **%v** with **status phase %s** in **%v** namespace\n\n",
+							backupStorageLocation.Name, bslStatusPhase, namespace,
+						)
+					}
+				}
+
+				link := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["BACKUP_STORAGE_LOCATIONS"] += fmt.Sprintf(
+					"| %v | %v | %t | %v | %s |\n",
+					namespace, backupStorageLocation.Name, backupStorageLocation.Spec.Default, bslStatus, link,
+				)
+				// velero get backup-locations
+				// NAME              PROVIDER   BUCKET/PREFIX           PHASE         LAST VALIDATED                  ACCESS MODE   DEFAULT
+				// velero-sample-1   aws        my-bucket-name/velero   Unavailable   2024-10-21 17:27:45 +0000 UTC   ReadWrite     true
+
+				// oc get bsl -n openshift-adp
+				// NAME              PHASE         LAST VALIDATED   AGE    DEFAULT
+				// velero-sample-1   Unavailable   22s              112s   true
+			}
+
+			// TODO permission
+			// TODO need defer somewhere?
+			err := os.MkdirAll(path+folder, 0777)
+			if err != nil {
+				fmt.Printf("An error happened while creating folder structure: %v\n", err)
+				// TODO!!!!
+				continue
+			}
+			createYAML(path, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["BACKUP_STORAGE_LOCATIONS"] = "❌ No BackupStorageLocation was found in the cluster"
+		summaryTemplateReplaces["ERRORS"] += "⚠️ No BackupStorageLocation was found in the cluster\n\n"
+	}
+}
+
+func ReplaceVolumeSnapshotLocationsSection(path string, volumeSnapshotLocationList *velerov1.VolumeSnapshotLocationList) {
+	if volumeSnapshotLocationList != nil {
+		volumeSnapshotLocationsByNamespace := map[string][]velerov1.VolumeSnapshotLocation{}
+
+		for _, volumeSnapshotLocation := range volumeSnapshotLocationList.Items {
+			volumeSnapshotLocationsByNamespace[volumeSnapshotLocation.Namespace] = append(volumeSnapshotLocationsByNamespace[volumeSnapshotLocation.Namespace], volumeSnapshotLocation)
+		}
+
+		summaryTemplateReplaces["VOLUME_SNAPSHOT_LOCATIONS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		for namespace, volumeSnapshotLocations := range volumeSnapshotLocationsByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/velero.io/volumesnapshotlocations", namespace)
+			file := folder + "/volumesnapshotlocations.yaml"
+			for _, volumeSnapshotLocation := range volumeSnapshotLocations {
+				volumeSnapshotLocation.GetObjectKind().SetGroupVersionKind(gvk.VolumeSnapshotLocationGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &volumeSnapshotLocation})
+
+				link := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["VOLUME_SNAPSHOT_LOCATIONS"] += fmt.Sprintf(
+					"| %v | %v | %s |\n",
+					namespace, volumeSnapshotLocation.Name, link,
+				)
+			}
+
+			// TODO permission
+			// TODO need defer somewhere?
+			err := os.MkdirAll(path+folder, 0777)
+			if err != nil {
+				fmt.Printf("An error happened while creating folder structure: %v\n", err)
+				// TODO!!!!
+				continue
+			}
+			createYAML(path, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["VOLUME_SNAPSHOT_LOCATIONS"] = "❌ No VolumeSnapshotLocation was found in the cluster"
 	}
 }
 
