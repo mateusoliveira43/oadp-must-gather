@@ -17,3 +17,14 @@ oc adm must-gather --image=<this-image>
 GOBIN=$(pwd)/bin go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.56.2
 ./bin/golangci-lint run --fix
 ```
+
+TODO write contributing and pre-requisites
+
+TODO when to update go.mod dependencies (like velero, oadp, nac)
+```
+go get github.com/openshift/oadp-operator@master
+go get github.com/migtools/oadp-non-admin@master
+go get github.com/openshift/oc@release-4.17
+```
+
+update OCP version variable for update links in summary
