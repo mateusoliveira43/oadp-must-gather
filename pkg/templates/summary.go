@@ -1,11 +1,13 @@
 package templates
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	volumesnapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
 	openshiftconfigv1 "github.com/openshift/api/config/v1"
@@ -13,6 +15,9 @@ import (
 	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 	velerov1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	velerov2alpha1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v2alpha1"
+	"github.com/vmware-tanzu/velero/pkg/cmd/util/downloadrequest"
+	"github.com/vmware-tanzu/velero/pkg/cmd/util/output"
+	"github.com/vmware-tanzu/velero/pkg/label"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -20,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/mateusoliveira43/oadp-must-gather/pkg/gvk"
 )
@@ -98,13 +104,9 @@ TODO info about where to find pod logs, events, secrets, configmaps, etc
 
 <<BACKUPS>>
 
-TODO describe details, logs
-
 ### Restores
 
 <<RESTORES>>
-
-TODO describe details, logs
 
 ### Schedules
 
@@ -257,7 +259,7 @@ func ReplaceDataProtectionApplicationsSection(outputPath string, dataProtectionA
 			dataProtectionApplicationsByNamespace[dataProtectionApplication.Namespace] = append(dataProtectionApplicationsByNamespace[dataProtectionApplication.Namespace], dataProtectionApplication)
 		}
 
-		summaryTemplateReplaces["DATA_PROTECTION_APPLICATIONS"] += "| Namespace | Name | spec.unsupportedOverrides | status.conditions[0] | details |\n| --- | --- | --- | --- | --- |\n"
+		summaryTemplateReplaces["DATA_PROTECTION_APPLICATIONS"] += "| Namespace | Name | spec.unsupportedOverrides | status.conditions[0] | yaml |\n| --- | --- | --- | --- | --- |\n"
 		for namespace, dataProtectionApplications := range dataProtectionApplicationsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -320,7 +322,7 @@ func ReplaceCloudStoragesSection(outputPath string, cloudStorageList *oadpv1alph
 			cloudStorageByNamespace[cloudStorage.Namespace] = append(cloudStorageByNamespace[cloudStorage.Namespace], cloudStorage)
 		}
 
-		summaryTemplateReplaces["CLOUD_STORAGES"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["CLOUD_STORAGES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, cloudStorages := range cloudStorageByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -353,7 +355,7 @@ func ReplaceBackupStorageLocationsSection(outputPath string, backupStorageLocati
 			backupStorageLocationsByNamespace[backupStorageLocation.Namespace] = append(backupStorageLocationsByNamespace[backupStorageLocation.Namespace], backupStorageLocation)
 		}
 
-		summaryTemplateReplaces["BACKUP_STORAGE_LOCATIONS"] += "| Namespace | Name | spec.default | status.phase | details |\n| --- | --- | --- | --- | --- |\n"
+		summaryTemplateReplaces["BACKUP_STORAGE_LOCATIONS"] += "| Namespace | Name | spec.default | status.phase | yaml |\n| --- | --- | --- | --- | --- |\n"
 		for namespace, backupStorageLocations := range backupStorageLocationsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -414,7 +416,7 @@ func ReplaceVolumeSnapshotLocationsSection(outputPath string, volumeSnapshotLoca
 			volumeSnapshotLocationsByNamespace[volumeSnapshotLocation.Namespace] = append(volumeSnapshotLocationsByNamespace[volumeSnapshotLocation.Namespace], volumeSnapshotLocation)
 		}
 
-		summaryTemplateReplaces["VOLUME_SNAPSHOT_LOCATIONS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["VOLUME_SNAPSHOT_LOCATIONS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, volumeSnapshotLocations := range volumeSnapshotLocationsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -439,7 +441,7 @@ func ReplaceVolumeSnapshotLocationsSection(outputPath string, volumeSnapshotLoca
 	}
 }
 
-func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList) {
+func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList, clusterClient client.Client, deleteBackupRequestList *velerov1.DeleteBackupRequestList, podVolumeBackupList *velerov1.PodVolumeBackupList) {
 	if backupList != nil && len(backupList.Items) != 0 {
 		backupsByNamespace := map[string][]velerov1.Backup{}
 
@@ -447,7 +449,7 @@ func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList) {
 			backupsByNamespace[backup.Namespace] = append(backupsByNamespace[backup.Namespace], backup)
 		}
 
-		summaryTemplateReplaces["BACKUPS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["BACKUPS"] += "| Namespace | Name | describe | logs | yaml |\n| --- | --- | --- | --- | ---|\n"
 		for namespace, backups := range backupsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -458,10 +460,45 @@ func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList) {
 				backup.GetObjectKind().SetGroupVersionKind(gvk.BackupGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &backup})
 
-				link := fmt.Sprintf("[`yaml`](%s)", file)
+				var relatedDeleteBackupRequests []velerov1.DeleteBackupRequest
+				for _, deleteBackupRequest := range deleteBackupRequestList.Items {
+					if deleteBackupRequest.Labels[velerov1.BackupNameLabel] == label.GetValidName(backup.Name) &&
+						deleteBackupRequest.Labels[velerov1.BackupUIDLabel] == string(backup.UID) {
+						relatedDeleteBackupRequests = append(relatedDeleteBackupRequests, deleteBackupRequest)
+					}
+				}
+				var relatedPodVolumeBackupLists []velerov1.PodVolumeBackup
+				for _, podVolumeBackup := range podVolumeBackupList.Items {
+					if podVolumeBackup.Labels[velerov1.BackupNameLabel] == label.GetValidName(backup.Name) {
+						relatedPodVolumeBackupLists = append(relatedPodVolumeBackupLists, podVolumeBackup)
+					}
+				}
+				// TODO when to use insecureSkipTLSVerify and caCertFile?
+				describeOutput := output.DescribeBackup(context.Background(), clusterClient, &backup, relatedDeleteBackupRequests, relatedPodVolumeBackupLists, true, false, "")
+
+				writeTo := &bytes.Buffer{}
+				// TODO when to use insecureSkipTLSVerify and caCertFile?
+				// TODO check error
+				// TODO user input on timeout?
+				downloadrequest.Stream(context.Background(), clusterClient, backup.Namespace, backup.Name, velerov1.DownloadTargetKindBackupLog, writeTo, 1*time.Minute, false, "")
+
+				yamlLink := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["BACKUPS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, backup.Name, link,
+					"| %v | %v | %s | %s | %s |\n",
+					namespace, backup.Name,
+					createFile(
+						outputPath,
+						folder+"/describe-"+backup.Name+".txt",
+						describeOutput,
+						"describe",
+					),
+					createFile(
+						outputPath,
+						folder+"/"+backup.Name+".log",
+						writeTo.String(),
+						"logs",
+					),
+					yamlLink,
 				)
 			}
 
@@ -472,7 +509,7 @@ func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList) {
 	}
 }
 
-func ReplaceRestoresSection(outputPath string, restoreListList *velerov1.RestoreList) {
+func ReplaceRestoresSection(outputPath string, restoreListList *velerov1.RestoreList, clusterClient client.Client, podVolumeRestoreList *velerov1.PodVolumeRestoreList) {
 	if restoreListList != nil && len(restoreListList.Items) != 0 {
 		restoresByNamespace := map[string][]velerov1.Restore{}
 
@@ -480,7 +517,7 @@ func ReplaceRestoresSection(outputPath string, restoreListList *velerov1.Restore
 			restoresByNamespace[restore.Namespace] = append(restoresByNamespace[restore.Namespace], restore)
 		}
 
-		summaryTemplateReplaces["RESTORES"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["RESTORES"] += "| Namespace | Name | describe | logs | yaml |\n| --- | --- | --- | --- | --- |\n"
 		for namespace, restores := range restoresByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -491,10 +528,38 @@ func ReplaceRestoresSection(outputPath string, restoreListList *velerov1.Restore
 				restore.GetObjectKind().SetGroupVersionKind(gvk.RestoreGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &restore})
 
-				link := fmt.Sprintf("[`yaml`](%s)", file)
+				var relatedPodVolumeRestoreLists []velerov1.PodVolumeRestore
+				for _, podVolumeRestore := range podVolumeRestoreList.Items {
+					if podVolumeRestore.Labels[velerov1.RestoreNameLabel] == label.GetValidName(restore.Name) {
+						relatedPodVolumeRestoreLists = append(relatedPodVolumeRestoreLists, podVolumeRestore)
+					}
+				}
+				// TODO when to use insecureSkipTLSVerify and caCertFile?
+				describeOutput := output.DescribeRestore(context.Background(), clusterClient, &restore, relatedPodVolumeRestoreLists, true, false, "")
+
+				writeTo := &bytes.Buffer{}
+				// TODO when to use insecureSkipTLSVerify and caCertFile?
+				// TODO check error
+				// TODO user input on timeout?
+				downloadrequest.Stream(context.Background(), clusterClient, restore.Namespace, restore.Name, velerov1.DownloadTargetKindRestoreLog, writeTo, 1*time.Minute, false, "")
+
+				yamllink := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["RESTORES"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, restore.Name, link,
+					"| %v | %v | %s | %s | %s |\n",
+					namespace, restore.Name,
+					createFile(
+						outputPath,
+						folder+"/describe-"+restore.Name+".txt",
+						describeOutput,
+						"describe",
+					),
+					createFile(
+						outputPath,
+						folder+"/"+restore.Name+".log",
+						writeTo.String(),
+						"logs",
+					),
+					yamllink,
 				)
 			}
 
@@ -513,7 +578,7 @@ func ReplaceSchedulesSection(outputPath string, scheduleList *velerov1.ScheduleL
 			schedulesByNamespace[schedule.Namespace] = append(schedulesByNamespace[schedule.Namespace], schedule)
 		}
 
-		summaryTemplateReplaces["SCHEDULES"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["SCHEDULES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, schedules := range schedulesByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -546,7 +611,7 @@ func ReplaceBackupRepositoriesSection(outputPath string, backupRepositoryList *v
 			backupRepositoriesByNamespace[backupRepository.Namespace] = append(backupRepositoriesByNamespace[backupRepository.Namespace], backupRepository)
 		}
 
-		summaryTemplateReplaces["BACKUPS_REPOSITORIES"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["BACKUPS_REPOSITORIES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, backupRepositories := range backupRepositoriesByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -579,7 +644,7 @@ func ReplaceDataUploadsSection(outputPath string, dataUploadList *velerov2alpha1
 			dataUploadByNamespace[dataUpload.Namespace] = append(dataUploadByNamespace[dataUpload.Namespace], dataUpload)
 		}
 
-		summaryTemplateReplaces["DATA_UPLOADS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DATA_UPLOADS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, dataUploads := range dataUploadByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -612,7 +677,7 @@ func ReplaceDataDownloadsSection(outputPath string, dataDownloadList *velerov2al
 			dataDownloadByNamespace[dataDownload.Namespace] = append(dataDownloadByNamespace[dataDownload.Namespace], dataDownload)
 		}
 
-		summaryTemplateReplaces["DATA_DOWNLOADS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DATA_DOWNLOADS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, dataDownloads := range dataDownloadByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -645,7 +710,7 @@ func ReplacePodVolumeBackupsSection(outputPath string, podVolumeBackupList *vele
 			podVolumeBackupsByNamespace[podVolumeBackup.Namespace] = append(podVolumeBackupsByNamespace[podVolumeBackup.Namespace], podVolumeBackup)
 		}
 
-		summaryTemplateReplaces["POD_VOLUME_BACKUPS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["POD_VOLUME_BACKUPS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, podVolumeBackups := range podVolumeBackupsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -678,7 +743,7 @@ func ReplacePodVolumeRestoresSection(outputPath string, podVolumeRestoreList *ve
 			podVolumeRestoresByNamespace[podVolumeRestore.Namespace] = append(podVolumeRestoresByNamespace[podVolumeRestore.Namespace], podVolumeRestore)
 		}
 
-		summaryTemplateReplaces["POD_VOLUME_RESTORES"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["POD_VOLUME_RESTORES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, podVolumeRestores := range podVolumeRestoresByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -711,7 +776,7 @@ func ReplaceDownloadRequestsSection(outputPath string, downloadRequestList *vele
 			downloadRequestsByNamespace[downloadRequest.Namespace] = append(downloadRequestsByNamespace[downloadRequest.Namespace], downloadRequest)
 		}
 
-		summaryTemplateReplaces["DOWNLOAD_REQUESTS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DOWNLOAD_REQUESTS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, downloadRequests := range downloadRequestsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -744,7 +809,7 @@ func ReplaceDeleteBackupRequestsSection(outputPath string, deleteBackupRequestLi
 			deleteBackupRequestsByNamespace[deleteBackupRequest.Namespace] = append(deleteBackupRequestsByNamespace[deleteBackupRequest.Namespace], deleteBackupRequest)
 		}
 
-		summaryTemplateReplaces["DELETE_BACKUP_REQUESTS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DELETE_BACKUP_REQUESTS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, deleteBackupRequests := range deleteBackupRequestsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -777,7 +842,7 @@ func ReplaceServerStatusRequestsSection(outputPath string, serverStatusRequestLi
 			serverStatusRequestsByNamespace[serverStatusRequest.Namespace] = append(serverStatusRequestsByNamespace[serverStatusRequest.Namespace], serverStatusRequest)
 		}
 
-		summaryTemplateReplaces["SERVER_STATUS_REQUESTS"] += "| Namespace | Name | details |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["SERVER_STATUS_REQUESTS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
 		for namespace, serverStatusRequests := range serverStatusRequestsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -917,6 +982,33 @@ func createYAML(outputPath string, yamlPath string, obj runtime.Object) string {
 			result = "❌ Unable to write " + objFilePath
 		} else {
 			result = fmt.Sprintf("For more information, check [`%s`](%s)\n\n", yamlPath, yamlPath)
+		}
+	}
+	defer newFile.Close()
+	return result
+}
+
+func createFile(outputPath string, describePath string, describeOutput string, describeTitle string) string {
+	describeFilePath := outputPath + describePath
+	dir := path.Dir(describeFilePath)
+	// TODO permission
+	// TODO need defer somewhere?
+	err := os.MkdirAll(dir, 0777)
+	if err != nil {
+		return "❌ Unable to create dir " + dir
+	}
+	result := ""
+	newFile, err := os.Create(describeFilePath)
+	if err != nil {
+		fmt.Println(err)
+		result = "❌ Unable to create file " + describeFilePath
+	} else {
+		err := os.WriteFile(describeFilePath, []byte(describeOutput), 0644)
+		if err != nil {
+			fmt.Println(err)
+			result = "❌ Unable to write " + describeFilePath
+		} else {
+			result = fmt.Sprintf("[`"+describeTitle+"`](%s)", describePath)
 		}
 	}
 	defer newFile.Close()

@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	mustGatherVersion    = "dev-Jan-22-2025"
+	mustGatherVersion    = "dev-Jan-28-2025"
 	oadpOpenShiftVersion = "4.18"
 	// TODO <this-image> const
 )
@@ -59,7 +59,7 @@ TODO`,
   # TODO metrics dump`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			// TODO test flags
 			// fmt.Printf("logsSince %#v\n", LogsSince)
 
@@ -74,7 +74,7 @@ TODO`,
 				return err
 			}
 
-			// in what versions of OCP must must-gether work? be careful about API versions update?
+			// in what versions of OCP must must-gather work? be careful about API versions update?
 			err = openshiftconfigv1.AddToScheme(clusterClient.Scheme())
 			if err != nil {
 				fmt.Printf("Exiting OADP must-gather, an error happened while adding to scheme: %v\n", err)
@@ -312,8 +312,8 @@ TODO`,
 			templates.ReplaceCloudStoragesSection(outputPath, cloudStorageList)
 			templates.ReplaceBackupStorageLocationsSection(outputPath, backupStorageLocationList)
 			templates.ReplaceVolumeSnapshotLocationsSection(outputPath, volumeSnapshotLocationList)
-			templates.ReplaceBackupsSection(outputPath, backupList)
-			templates.ReplaceRestoresSection(outputPath, restoreList)
+			templates.ReplaceBackupsSection(outputPath, backupList, clusterClient, deleteBackupRequestList, podVolumeBackupList)
+			templates.ReplaceRestoresSection(outputPath, restoreList, clusterClient, podVolumeRestoreList)
 			templates.ReplaceSchedulesSection(outputPath, scheduleList)
 			templates.ReplaceBackupRepositoriesSection(outputPath, backupRepositoryList)
 			templates.ReplaceDataUploadsSection(outputPath, dataUploadList)
