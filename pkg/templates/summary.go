@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -449,7 +450,7 @@ func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList, c
 			backupsByNamespace[backup.Namespace] = append(backupsByNamespace[backup.Namespace], backup)
 		}
 
-		summaryTemplateReplaces["BACKUPS"] += "| Namespace | Name | describe | logs | yaml |\n| --- | --- | --- | --- | ---|\n"
+		summaryTemplateReplaces["BACKUPS"] += "| Namespace | Name | status.phase | describe | logs | yaml |\n| --- | --- | --- | --- | --- | ---|\n"
 		for namespace, backups := range backupsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -459,6 +460,35 @@ func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList, c
 			for _, backup := range backups {
 				backup.GetObjectKind().SetGroupVersionKind(gvk.BackupGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &backup})
+
+				backupStatus := ""
+				backupStatusPhase := backup.Status.Phase
+				if len(backupStatusPhase) == 0 {
+					backupStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ Backup **%v** with **no status phase** in **%v** namespace\n\n",
+						backup.Name, namespace,
+					)
+				} else {
+					failedStates := []velerov1.BackupPhase{
+						velerov1.BackupPhaseFailed,
+						velerov1.BackupPhasePartiallyFailed,
+						velerov1.BackupPhaseFinalizingPartiallyFailed,
+						velerov1.BackupPhaseWaitingForPluginOperationsPartiallyFailed,
+						velerov1.BackupPhaseFailedValidation,
+					}
+					if backupStatusPhase == velerov1.BackupPhaseCompleted {
+						backupStatus = fmt.Sprintf("✅ status phase %s", backupStatusPhase)
+					} else if slices.Contains(failedStates, backupStatusPhase) {
+						backupStatus = fmt.Sprintf("❌ status phase %s", backupStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ Backup **%v** with **status phase %s** in **%v** namespace\n\n",
+							backup.Name, backupStatusPhase, namespace,
+						)
+					} else {
+						backupStatus = fmt.Sprintf("⚠️ status phase %s", backupStatusPhase)
+					}
+				}
 
 				var relatedDeleteBackupRequests []velerov1.DeleteBackupRequest
 				for _, deleteBackupRequest := range deleteBackupRequestList.Items {
@@ -473,31 +503,42 @@ func ReplaceBackupsSection(outputPath string, backupList *velerov1.BackupList, c
 						relatedPodVolumeBackupLists = append(relatedPodVolumeBackupLists, podVolumeBackup)
 					}
 				}
+
 				// TODO when to use insecureSkipTLSVerify and caCertFile?
-				describeOutput := output.DescribeBackup(context.Background(), clusterClient, &backup, relatedDeleteBackupRequests, relatedPodVolumeBackupLists, true, false, "")
+				describeOutput := func(ctx context.Context) string {
+					ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					return output.DescribeBackup(ctx, clusterClient, &backup, relatedDeleteBackupRequests, relatedPodVolumeBackupLists, true, false, "")
+				}(context.Background())
 
 				writeTo := &bytes.Buffer{}
 				// TODO when to use insecureSkipTLSVerify and caCertFile?
-				// TODO check error
 				// TODO user input on timeout?
-				downloadrequest.Stream(context.Background(), clusterClient, backup.Namespace, backup.Name, velerov1.DownloadTargetKindBackupLog, writeTo, 1*time.Minute, false, "")
-
+				err := downloadrequest.Stream(context.Background(), clusterClient, backup.Namespace, backup.Name, velerov1.DownloadTargetKindBackupLog, writeTo, 5*time.Second, false, "")
+				var logs string
+				if err != nil {
+					fmt.Println(err)
+					logs = fmt.Sprintf("❌ %s", err)
+				} else {
+					logs = createFile(
+						outputPath,
+						folder+"/"+backup.Name+".log",
+						writeTo.String(),
+						"logs",
+					)
+				}
 				yamlLink := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["BACKUPS"] += fmt.Sprintf(
-					"| %v | %v | %s | %s | %s |\n",
+					"| %v | %v | %s | %s | %s | %s |\n",
 					namespace, backup.Name,
+					backupStatus,
 					createFile(
 						outputPath,
 						folder+"/describe-"+backup.Name+".txt",
 						describeOutput,
 						"describe",
 					),
-					createFile(
-						outputPath,
-						folder+"/"+backup.Name+".log",
-						writeTo.String(),
-						"logs",
-					),
+					logs,
 					yamlLink,
 				)
 			}
@@ -517,7 +558,7 @@ func ReplaceRestoresSection(outputPath string, restoreListList *velerov1.Restore
 			restoresByNamespace[restore.Namespace] = append(restoresByNamespace[restore.Namespace], restore)
 		}
 
-		summaryTemplateReplaces["RESTORES"] += "| Namespace | Name | describe | logs | yaml |\n| --- | --- | --- | --- | --- |\n"
+		summaryTemplateReplaces["RESTORES"] += "| Namespace | Name | status.phase | describe | logs | yaml |\n| --- | --- | --- | --- | --- | --- |\n"
 		for namespace, restores := range restoresByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -528,37 +569,78 @@ func ReplaceRestoresSection(outputPath string, restoreListList *velerov1.Restore
 				restore.GetObjectKind().SetGroupVersionKind(gvk.RestoreGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &restore})
 
+				restoreStatus := ""
+				restoreStatusPhase := restore.Status.Phase
+				if len(restoreStatusPhase) == 0 {
+					restoreStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ Restore **%v** with **no status phase** in **%v** namespace\n\n",
+						restore.Name, namespace,
+					)
+				} else {
+					failedStates := []velerov1.RestorePhase{
+						velerov1.RestorePhaseFailed,
+						velerov1.RestorePhasePartiallyFailed,
+						velerov1.RestorePhaseFinalizingPartiallyFailed,
+						velerov1.RestorePhaseWaitingForPluginOperationsPartiallyFailed,
+						velerov1.RestorePhaseFailedValidation,
+					}
+					if restoreStatusPhase == velerov1.RestorePhaseCompleted {
+						restoreStatus = fmt.Sprintf("✅ status phase %s", restoreStatusPhase)
+					} else if slices.Contains(failedStates, restoreStatusPhase) {
+						restoreStatus = fmt.Sprintf("❌ status phase %s", restoreStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ Restore **%v** with **status phase %s** in **%v** namespace\n\n",
+							restore.Name, restoreStatusPhase, namespace,
+						)
+					} else {
+						restoreStatus = fmt.Sprintf("⚠️ status phase %s", restoreStatusPhase)
+					}
+				}
+
 				var relatedPodVolumeRestoreLists []velerov1.PodVolumeRestore
 				for _, podVolumeRestore := range podVolumeRestoreList.Items {
 					if podVolumeRestore.Labels[velerov1.RestoreNameLabel] == label.GetValidName(restore.Name) {
 						relatedPodVolumeRestoreLists = append(relatedPodVolumeRestoreLists, podVolumeRestore)
 					}
 				}
+
 				// TODO when to use insecureSkipTLSVerify and caCertFile?
-				describeOutput := output.DescribeRestore(context.Background(), clusterClient, &restore, relatedPodVolumeRestoreLists, true, false, "")
+				describeOutput := func(ctx context.Context) string {
+					ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					return output.DescribeRestore(ctx, clusterClient, &restore, relatedPodVolumeRestoreLists, true, false, "")
+				}(context.Background())
 
 				writeTo := &bytes.Buffer{}
 				// TODO when to use insecureSkipTLSVerify and caCertFile?
-				// TODO check error
 				// TODO user input on timeout?
-				downloadrequest.Stream(context.Background(), clusterClient, restore.Namespace, restore.Name, velerov1.DownloadTargetKindRestoreLog, writeTo, 1*time.Minute, false, "")
+				err := downloadrequest.Stream(context.Background(), clusterClient, restore.Namespace, restore.Name, velerov1.DownloadTargetKindRestoreLog, writeTo, 5*time.Second, false, "")
+				var logs string
+				if err != nil {
+					fmt.Println(err)
+					logs = fmt.Sprintf("❌ %s", err)
+				} else {
+					logs = createFile(
+						outputPath,
+						folder+"/"+restore.Name+".log",
+						writeTo.String(),
+						"logs",
+					)
+				}
 
 				yamllink := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["RESTORES"] += fmt.Sprintf(
-					"| %v | %v | %s | %s | %s |\n",
+					"| %v | %v | %s | %s | %s | %s |\n",
 					namespace, restore.Name,
+					restoreStatus,
 					createFile(
 						outputPath,
 						folder+"/describe-"+restore.Name+".txt",
 						describeOutput,
 						"describe",
 					),
-					createFile(
-						outputPath,
-						folder+"/"+restore.Name+".log",
-						writeTo.String(),
-						"logs",
-					),
+					logs,
 					yamllink,
 				)
 			}
@@ -578,7 +660,7 @@ func ReplaceSchedulesSection(outputPath string, scheduleList *velerov1.ScheduleL
 			schedulesByNamespace[schedule.Namespace] = append(schedulesByNamespace[schedule.Namespace], schedule)
 		}
 
-		summaryTemplateReplaces["SCHEDULES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["SCHEDULES"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, schedules := range schedulesByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -589,10 +671,32 @@ func ReplaceSchedulesSection(outputPath string, scheduleList *velerov1.ScheduleL
 				schedule.GetObjectKind().SetGroupVersionKind(gvk.ScheduleGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &schedule})
 
+				scheduleStatus := ""
+				scheduleStatusPhase := schedule.Status.Phase
+				if len(scheduleStatusPhase) == 0 {
+					scheduleStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ Schedule **%v** with **no status phase** in **%v** namespace\n\n",
+						schedule.Name, namespace,
+					)
+				} else {
+					if scheduleStatusPhase == velerov1.SchedulePhaseEnabled {
+						scheduleStatus = fmt.Sprintf("✅ status phase %s", scheduleStatusPhase)
+					} else if scheduleStatusPhase == velerov1.SchedulePhaseFailedValidation {
+						scheduleStatus = fmt.Sprintf("❌ status phase %s", scheduleStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ Schedule **%v** with **status phase %s** in **%v** namespace\n\n",
+							schedule.Name, scheduleStatusPhase, namespace,
+						)
+					} else {
+						scheduleStatus = fmt.Sprintf("⚠️ status phase %s", scheduleStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["SCHEDULES"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, schedule.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, schedule.Name, scheduleStatus, link,
 				)
 			}
 
@@ -611,7 +715,7 @@ func ReplaceBackupRepositoriesSection(outputPath string, backupRepositoryList *v
 			backupRepositoriesByNamespace[backupRepository.Namespace] = append(backupRepositoriesByNamespace[backupRepository.Namespace], backupRepository)
 		}
 
-		summaryTemplateReplaces["BACKUPS_REPOSITORIES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["BACKUPS_REPOSITORIES"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, backupRepositories := range backupRepositoriesByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -622,10 +726,32 @@ func ReplaceBackupRepositoriesSection(outputPath string, backupRepositoryList *v
 				backupRepository.GetObjectKind().SetGroupVersionKind(gvk.BackupRepositoryGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &backupRepository})
 
+				backupRepositoryStatus := ""
+				backupRepositoryStatusPhase := backupRepository.Status.Phase
+				if len(backupRepositoryStatusPhase) == 0 {
+					backupRepositoryStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ BackupRepository **%v** with **no status phase** in **%v** namespace\n\n",
+						backupRepository.Name, namespace,
+					)
+				} else {
+					if backupRepositoryStatusPhase == velerov1.BackupRepositoryPhaseReady {
+						backupRepositoryStatus = fmt.Sprintf("✅ status phase %s", backupRepositoryStatusPhase)
+					} else if backupRepositoryStatusPhase == velerov1.BackupRepositoryPhaseNotReady {
+						backupRepositoryStatus = fmt.Sprintf("❌ status phase %s", backupRepositoryStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ BackupRepository **%v** with **status phase %s** in **%v** namespace\n\n",
+							backupRepository.Name, backupRepositoryStatusPhase, namespace,
+						)
+					} else {
+						backupRepositoryStatus = fmt.Sprintf("⚠️ status phase %s", backupRepositoryStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["BACKUPS_REPOSITORIES"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, backupRepository.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, backupRepository.Name, backupRepositoryStatus, link,
 				)
 			}
 
@@ -644,7 +770,7 @@ func ReplaceDataUploadsSection(outputPath string, dataUploadList *velerov2alpha1
 			dataUploadByNamespace[dataUpload.Namespace] = append(dataUploadByNamespace[dataUpload.Namespace], dataUpload)
 		}
 
-		summaryTemplateReplaces["DATA_UPLOADS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DATA_UPLOADS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, dataUploads := range dataUploadByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -655,10 +781,37 @@ func ReplaceDataUploadsSection(outputPath string, dataUploadList *velerov2alpha1
 				dataUpload.GetObjectKind().SetGroupVersionKind(gvk.DataUploadGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &dataUpload})
 
+				dataUploadStatus := ""
+				dataUploadStatusPhase := dataUpload.Status.Phase
+				if len(dataUploadStatusPhase) == 0 {
+					dataUploadStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ DataUpload **%v** with **no status phase** in **%v** namespace\n\n",
+						dataUpload.Name, namespace,
+					)
+				} else {
+					failedStates := []velerov2alpha1.DataUploadPhase{
+						velerov2alpha1.DataUploadPhaseCanceling,
+						velerov2alpha1.DataUploadPhaseCanceled,
+						velerov2alpha1.DataUploadPhaseFailed,
+					}
+					if dataUploadStatusPhase == velerov2alpha1.DataUploadPhaseCompleted {
+						dataUploadStatus = fmt.Sprintf("✅ status phase %s", dataUploadStatusPhase)
+					} else if slices.Contains(failedStates, dataUploadStatusPhase) {
+						dataUploadStatus = fmt.Sprintf("❌ status phase %s", dataUploadStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ DataUpload **%v** with **status phase %s** in **%v** namespace\n\n",
+							dataUpload.Name, dataUploadStatusPhase, namespace,
+						)
+					} else {
+						dataUploadStatus = fmt.Sprintf("⚠️ status phase %s", dataUploadStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["DATA_UPLOADS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, dataUpload.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, dataUpload.Name, dataUploadStatus, link,
 				)
 			}
 
@@ -677,7 +830,7 @@ func ReplaceDataDownloadsSection(outputPath string, dataDownloadList *velerov2al
 			dataDownloadByNamespace[dataDownload.Namespace] = append(dataDownloadByNamespace[dataDownload.Namespace], dataDownload)
 		}
 
-		summaryTemplateReplaces["DATA_DOWNLOADS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DATA_DOWNLOADS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, dataDownloads := range dataDownloadByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -688,10 +841,37 @@ func ReplaceDataDownloadsSection(outputPath string, dataDownloadList *velerov2al
 				dataDownload.GetObjectKind().SetGroupVersionKind(gvk.DataDownloadGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &dataDownload})
 
+				dataDownloadStatus := ""
+				dataDownloadStatusPhase := dataDownload.Status.Phase
+				if len(dataDownloadStatusPhase) == 0 {
+					dataDownloadStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ DataDownload **%v** with **no status phase** in **%v** namespace\n\n",
+						dataDownload.Name, namespace,
+					)
+				} else {
+					failedStates := []velerov2alpha1.DataDownloadPhase{
+						velerov2alpha1.DataDownloadPhaseCanceling,
+						velerov2alpha1.DataDownloadPhaseCanceled,
+						velerov2alpha1.DataDownloadPhaseFailed,
+					}
+					if dataDownloadStatusPhase == velerov2alpha1.DataDownloadPhaseCompleted {
+						dataDownloadStatus = fmt.Sprintf("✅ status phase %s", dataDownloadStatusPhase)
+					} else if slices.Contains(failedStates, dataDownloadStatusPhase) {
+						dataDownloadStatus = fmt.Sprintf("❌ status phase %s", dataDownloadStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ DataDownload **%v** with **status phase %s** in **%v** namespace\n\n",
+							dataDownload.Name, dataDownloadStatusPhase, namespace,
+						)
+					} else {
+						dataDownloadStatus = fmt.Sprintf("⚠️ status phase %s", dataDownloadStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["DATA_DOWNLOADS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, dataDownload.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, dataDownload.Name, dataDownloadStatus, link,
 				)
 			}
 
@@ -710,7 +890,7 @@ func ReplacePodVolumeBackupsSection(outputPath string, podVolumeBackupList *vele
 			podVolumeBackupsByNamespace[podVolumeBackup.Namespace] = append(podVolumeBackupsByNamespace[podVolumeBackup.Namespace], podVolumeBackup)
 		}
 
-		summaryTemplateReplaces["POD_VOLUME_BACKUPS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["POD_VOLUME_BACKUPS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, podVolumeBackups := range podVolumeBackupsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -721,10 +901,32 @@ func ReplacePodVolumeBackupsSection(outputPath string, podVolumeBackupList *vele
 				podVolumeBackup.GetObjectKind().SetGroupVersionKind(gvk.PodVolumeBackupGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &podVolumeBackup})
 
+				podVolumeBackupStatus := ""
+				podVolumeBackupStatusPhase := podVolumeBackup.Status.Phase
+				if len(podVolumeBackupStatusPhase) == 0 {
+					podVolumeBackupStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ PodVolumeBackup **%v** with **no status phase** in **%v** namespace\n\n",
+						podVolumeBackup.Name, namespace,
+					)
+				} else {
+					if podVolumeBackupStatusPhase == velerov1.PodVolumeBackupPhaseCompleted {
+						podVolumeBackupStatus = fmt.Sprintf("✅ status phase %s", podVolumeBackupStatusPhase)
+					} else if podVolumeBackupStatusPhase == velerov1.PodVolumeBackupPhaseFailed {
+						podVolumeBackupStatus = fmt.Sprintf("❌ status phase %s", podVolumeBackupStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ PodVolumeBackup **%v** with **status phase %s** in **%v** namespace\n\n",
+							podVolumeBackup.Name, podVolumeBackupStatusPhase, namespace,
+						)
+					} else {
+						podVolumeBackupStatus = fmt.Sprintf("⚠️ status phase %s", podVolumeBackupStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["POD_VOLUME_BACKUPS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, podVolumeBackup.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, podVolumeBackup.Name, podVolumeBackupStatus, link,
 				)
 			}
 
@@ -743,7 +945,7 @@ func ReplacePodVolumeRestoresSection(outputPath string, podVolumeRestoreList *ve
 			podVolumeRestoresByNamespace[podVolumeRestore.Namespace] = append(podVolumeRestoresByNamespace[podVolumeRestore.Namespace], podVolumeRestore)
 		}
 
-		summaryTemplateReplaces["POD_VOLUME_RESTORES"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["POD_VOLUME_RESTORES"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, podVolumeRestores := range podVolumeRestoresByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -754,10 +956,32 @@ func ReplacePodVolumeRestoresSection(outputPath string, podVolumeRestoreList *ve
 				podVolumeRestore.GetObjectKind().SetGroupVersionKind(gvk.PodVolumeRestoreGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &podVolumeRestore})
 
+				podVolumeRestoreStatus := ""
+				podVolumeRestoreStatusPhase := podVolumeRestore.Status.Phase
+				if len(podVolumeRestoreStatusPhase) == 0 {
+					podVolumeRestoreStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ PodVolumeRestore **%v** with **no status phase** in **%v** namespace\n\n",
+						podVolumeRestore.Name, namespace,
+					)
+				} else {
+					if podVolumeRestoreStatusPhase == velerov1.PodVolumeRestorePhaseCompleted {
+						podVolumeRestoreStatus = fmt.Sprintf("✅ status phase %s", podVolumeRestoreStatusPhase)
+					} else if podVolumeRestoreStatusPhase == velerov1.PodVolumeRestorePhaseFailed {
+						podVolumeRestoreStatus = fmt.Sprintf("❌ status phase %s", podVolumeRestoreStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ PodVolumeRestore **%v** with **status phase %s** in **%v** namespace\n\n",
+							podVolumeRestore.Name, podVolumeRestoreStatusPhase, namespace,
+						)
+					} else {
+						podVolumeRestoreStatus = fmt.Sprintf("⚠️ status phase %s", podVolumeRestoreStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["POD_VOLUME_RESTORES"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, podVolumeRestore.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, podVolumeRestore.Name, podVolumeRestoreStatus, link,
 				)
 			}
 
@@ -776,7 +1000,7 @@ func ReplaceDownloadRequestsSection(outputPath string, downloadRequestList *vele
 			downloadRequestsByNamespace[downloadRequest.Namespace] = append(downloadRequestsByNamespace[downloadRequest.Namespace], downloadRequest)
 		}
 
-		summaryTemplateReplaces["DOWNLOAD_REQUESTS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DOWNLOAD_REQUESTS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, downloadRequests := range downloadRequestsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -787,10 +1011,26 @@ func ReplaceDownloadRequestsSection(outputPath string, downloadRequestList *vele
 				downloadRequest.GetObjectKind().SetGroupVersionKind(gvk.DownloadRequestGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &downloadRequest})
 
+				downloadRequestStatus := ""
+				downloadRequestStatusPhase := downloadRequest.Status.Phase
+				if len(downloadRequestStatusPhase) == 0 {
+					downloadRequestStatus = "⚠️ no status"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ DownloadRequest **%v** with **no status** in **%v** namespace\n\n",
+						downloadRequest.Name, namespace,
+					)
+				} else {
+					if downloadRequestStatusPhase == velerov1.DownloadRequestPhaseProcessed {
+						downloadRequestStatus = fmt.Sprintf("✅ status phase %s", downloadRequestStatusPhase)
+					} else {
+						downloadRequestStatus = fmt.Sprintf("⚠️ status phase %s", downloadRequestStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["DOWNLOAD_REQUESTS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, downloadRequest.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, downloadRequest.Name, downloadRequestStatus, link,
 				)
 			}
 
@@ -809,7 +1049,7 @@ func ReplaceDeleteBackupRequestsSection(outputPath string, deleteBackupRequestLi
 			deleteBackupRequestsByNamespace[deleteBackupRequest.Namespace] = append(deleteBackupRequestsByNamespace[deleteBackupRequest.Namespace], deleteBackupRequest)
 		}
 
-		summaryTemplateReplaces["DELETE_BACKUP_REQUESTS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["DELETE_BACKUP_REQUESTS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, deleteBackupRequests := range deleteBackupRequestsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -820,10 +1060,26 @@ func ReplaceDeleteBackupRequestsSection(outputPath string, deleteBackupRequestLi
 				deleteBackupRequest.GetObjectKind().SetGroupVersionKind(gvk.DeleteBackupRequestGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &deleteBackupRequest})
 
+				deleteBackupRequestStatus := ""
+				deleteBackupRequestStatusPhase := deleteBackupRequest.Status.Phase
+				if len(deleteBackupRequestStatusPhase) == 0 {
+					deleteBackupRequestStatus = "⚠️ no status"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ DeleteBackupRequest **%v** with **no status** in **%v** namespace\n\n",
+						deleteBackupRequest.Name, namespace,
+					)
+				} else {
+					if deleteBackupRequestStatusPhase == velerov1.DeleteBackupRequestPhaseProcessed {
+						deleteBackupRequestStatus = fmt.Sprintf("✅ status phase %s", deleteBackupRequestStatusPhase)
+					} else {
+						deleteBackupRequestStatus = fmt.Sprintf("⚠️ status phase %s", deleteBackupRequestStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["DELETE_BACKUP_REQUESTS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, deleteBackupRequest.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, deleteBackupRequest.Name, deleteBackupRequestStatus, link,
 				)
 			}
 
@@ -842,7 +1098,7 @@ func ReplaceServerStatusRequestsSection(outputPath string, serverStatusRequestLi
 			serverStatusRequestsByNamespace[serverStatusRequest.Namespace] = append(serverStatusRequestsByNamespace[serverStatusRequest.Namespace], serverStatusRequest)
 		}
 
-		summaryTemplateReplaces["SERVER_STATUS_REQUESTS"] += "| Namespace | Name | yaml |\n| --- | --- | --- |\n"
+		summaryTemplateReplaces["SERVER_STATUS_REQUESTS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
 		for namespace, serverStatusRequests := range serverStatusRequestsByNamespace {
 			list := &corev1.List{}
 			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
@@ -853,10 +1109,26 @@ func ReplaceServerStatusRequestsSection(outputPath string, serverStatusRequestLi
 				serverStatusRequest.GetObjectKind().SetGroupVersionKind(gvk.ServerStatusRequestGVK)
 				list.Items = append(list.Items, runtime.RawExtension{Object: &serverStatusRequest})
 
+				serverStatusRequestStatus := ""
+				serverStatusRequestStatusPhase := serverStatusRequest.Status.Phase
+				if len(serverStatusRequestStatusPhase) == 0 {
+					serverStatusRequestStatus = "⚠️ no status"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ ServerStatusRequest **%v** with **no status** in **%v** namespace\n\n",
+						serverStatusRequest.Name, namespace,
+					)
+				} else {
+					if serverStatusRequestStatusPhase == velerov1.ServerStatusRequestPhaseProcessed {
+						serverStatusRequestStatus = fmt.Sprintf("✅ status phase %s", serverStatusRequestStatusPhase)
+					} else {
+						serverStatusRequestStatus = fmt.Sprintf("⚠️ status phase %s", serverStatusRequestStatusPhase)
+					}
+				}
+
 				link := fmt.Sprintf("[`yaml`](%s)", file)
 				summaryTemplateReplaces["SERVER_STATUS_REQUESTS"] += fmt.Sprintf(
-					"| %v | %v | %s |\n",
-					namespace, serverStatusRequest.Name, link,
+					"| %v | %v | %s | %s |\n",
+					namespace, serverStatusRequest.Name, serverStatusRequestStatus, link,
 				)
 			}
 

@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	mustGatherVersion    = "dev-Jan-28-2025"
+	mustGatherVersion    = "dev-Jan-30-2025"
 	oadpOpenShiftVersion = "4.18"
 	// TODO <this-image> const
 )
