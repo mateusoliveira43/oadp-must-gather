@@ -26,5 +26,3 @@ go get github.com/openshift/oadp-operator@master
 go get github.com/migtools/oadp-non-admin@master
 go get github.com/openshift/oc@release-4.17
 ```
-
-update OCP version variable for update links in summary

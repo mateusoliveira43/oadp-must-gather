@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -mod=mod
 
 FROM registry.access.redhat.com/ubi9-minimal:latest
 
-# od adm must-gather uses this packages to download the output
+# oc adm must-gather uses this packages to download the output
 RUN microdnf -y install rsync tar
 
 COPY --from=builder /workspace/gather /usr/bin/gather
