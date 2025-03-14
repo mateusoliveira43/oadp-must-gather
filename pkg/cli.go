@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	mustGatherVersion    = "dev-Jan-30-2025"
+	mustGatherVersion = "dev-mar-14-2025"
+	// TODO remove var, not applicable anymore
 	oadpOpenShiftVersion = "4.18"
 	// TODO <this-image> const
 )
@@ -160,9 +161,14 @@ TODO`,
 			dataDownloadList := &velerov2alpha1.DataDownloadList{}
 			podVolumeBackupList := &velerov1.PodVolumeBackupList{}
 			podVolumeRestoreList := &velerov1.PodVolumeRestoreList{}
-			downloadRequestList := &velerov1.DownloadRequestList{}
+
 			deleteBackupRequestList := &velerov1.DeleteBackupRequestList{}
 			serverStatusRequestList := &velerov1.ServerStatusRequestList{}
+			nonAdminBackupStorageLocationRequestList := &nac1alpha1.NonAdminBackupStorageLocationRequestList{}
+			nonAdminBackupStorageLocationList := &nac1alpha1.NonAdminBackupStorageLocationList{}
+			nonAdminBackupList := &nac1alpha1.NonAdminBackupList{}
+			nonAdminRestoreList := &nac1alpha1.NonAdminRestoreList{}
+			nonAdminDownloadRequestList := &nac1alpha1.NonAdminDownloadRequestList{}
 
 			storageClassList := &storagev1.StorageClassList{}
 			volumeSnapshotClassList := &volumesnapshotv1.VolumeSnapshotClassList{}
@@ -171,6 +177,7 @@ TODO`,
 				infrastructureList,
 				nodeList,
 				clusterServiceVersionList,
+
 				dataProtectionApplicationList,
 				cloudStorageList,
 				backupStorageLocationList,
@@ -183,9 +190,14 @@ TODO`,
 				dataDownloadList,
 				podVolumeBackupList,
 				podVolumeRestoreList,
-				downloadRequestList,
+
 				deleteBackupRequestList,
 				serverStatusRequestList,
+				nonAdminBackupStorageLocationRequestList,
+				nonAdminBackupStorageLocationList,
+				nonAdminBackupList,
+				nonAdminRestoreList,
+				nonAdminDownloadRequestList,
 
 				storageClassList,
 				volumeSnapshotClassList,
@@ -281,7 +293,6 @@ TODO`,
 				if err != nil {
 					fmt.Println(err)
 				}
-				// TODO add entry in markdown for finding things
 			}
 
 			// gather_logs
@@ -312,8 +323,16 @@ TODO`,
 			templates.ReplaceCloudStoragesSection(outputPath, cloudStorageList)
 			templates.ReplaceBackupStorageLocationsSection(outputPath, backupStorageLocationList)
 			templates.ReplaceVolumeSnapshotLocationsSection(outputPath, volumeSnapshotLocationList)
+			// this creates DownloadRequests CRs
 			templates.ReplaceBackupsSection(outputPath, backupList, clusterClient, deleteBackupRequestList, podVolumeBackupList)
 			templates.ReplaceRestoresSection(outputPath, restoreList, clusterClient, podVolumeRestoreList)
+
+			downloadRequestList := &velerov1.DownloadRequestList{}
+			err = gather.AllResources(clusterClient, downloadRequestList)
+			if err != nil {
+				fmt.Println(err)
+			}
+
 			templates.ReplaceSchedulesSection(outputPath, scheduleList)
 			templates.ReplaceBackupRepositoriesSection(outputPath, backupRepositoryList)
 			templates.ReplaceDataUploadsSection(outputPath, dataUploadList)
@@ -323,7 +342,11 @@ TODO`,
 			templates.ReplaceDownloadRequestsSection(outputPath, downloadRequestList)
 			templates.ReplaceDeleteBackupRequestsSection(outputPath, deleteBackupRequestList)
 			templates.ReplaceServerStatusRequestsSection(outputPath, serverStatusRequestList)
-			// TODO NAC CRs
+			templates.ReplaceNonAdminBackupStorageLocationRequestsSection(outputPath, nonAdminBackupStorageLocationRequestList)
+			templates.ReplaceNonAdminBackupStorageLocationsSection(outputPath, nonAdminBackupStorageLocationList)
+			templates.ReplaceNonAdminBackupsSection(outputPath, nonAdminBackupList)
+			templates.ReplaceNonAdminRestoresSection(outputPath, nonAdminRestoreList)
+			templates.ReplaceNonAdminDownloadRequestsSection(outputPath, nonAdminDownloadRequestList)
 			templates.ReplaceAvailableStorageClassesSection(outputPath, storageClassList)
 			templates.ReplaceAvailableVolumeSnapshotClassesSection(outputPath, volumeSnapshotClassList)
 			templates.ReplaceAvailableCSIDriversSection(outputPath, csiDriverList, oadpOpenShiftVersion)

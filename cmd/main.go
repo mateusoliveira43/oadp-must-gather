@@ -15,7 +15,7 @@ func init() {
 	pkg.CLI.Flags().DurationVarP(&pkg.LogsSince, "logs-since", "l", 1*time.Hour, "TODO if zero, all")
 	pkg.CLI.Flags().DurationVarP(&pkg.Timeout, "timeout", "t", 0, "TODO if zero, no timeout")
 	pkg.CLI.Flags().BoolVarP(&pkg.SkipTLS, "skip-tls", "s", false, "TODO")
-	// pkg.CLI.Flags().BoolVarP(&essentialOnly, "essential-only", "e", false, "TODO")
+	// TODO pkg.CLI.Flags().BoolVarP(&essentialOnly, "essential-only", "e", false, "TODO")
 	pkg.CLI.Flags().BoolP("help", "h", false, "Show OADP Must-gather help message.")
 	// TODO JSON output in the future?
 

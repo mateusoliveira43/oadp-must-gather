@@ -95,7 +95,31 @@ var (
 		Version: "v1",
 		Kind:    "ServerStatusRequest",
 	}
-	// TODO NAC
+	NonAdminBackupStorageLocationRequestGVK = schema.GroupVersionKind{
+		Group:   "oadp.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "NonAdminBackupStorageLocationRequest",
+	}
+	NonAdminBackupStorageLocationGVK = schema.GroupVersionKind{
+		Group:   "oadp.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "NonAdminBackupStorageLocation",
+	}
+	NonAdminBackupGVK = schema.GroupVersionKind{
+		Group:   "oadp.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "NonAdminBackup",
+	}
+	NonAdminRestoreGVK = schema.GroupVersionKind{
+		Group:   "oadp.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "NonAdminRestore",
+	}
+	NonAdminDownloadRequestGVK = schema.GroupVersionKind{
+		Group:   "oadp.openshift.io",
+		Version: "v1alpha1",
+		Kind:    "NonAdminDownloadRequest",
+	}
 	StorageClassGVK = schema.GroupVersionKind{
 		Group:   "storage.k8s.io",
 		Version: "v1",

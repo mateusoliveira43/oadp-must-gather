@@ -11,6 +11,7 @@ import (
 	"time"
 
 	volumesnapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
+	nac1alpha1 "github.com/migtools/oadp-non-admin/api/v1alpha1"
 	openshiftconfigv1 "github.com/openshift/api/config/v1"
 	oadpv1alpha1 "github.com/openshift/oadp-operator/api/v1alpha1"
 	operatorsv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
@@ -22,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/printers"
@@ -52,7 +54,11 @@ var (
 		"DOWNLOAD_REQUESTS",
 		"DELETE_BACKUP_REQUESTS",
 		"SERVER_STATUS_REQUESTS",
-		// TODO NAC after NAC is finished
+		"NON_ADMIN_BACKUP_STORAGE_LOCATION_REQUESTS",
+		"NON_ADMIN_BACKUP_STORAGE_LOCATIONS",
+		"NON_ADMIN_BACKUPS",
+		"NON_ADMIN_RESTORES",
+		"NON_ADMIN_DOWNLOAD_REQUESTS",
 		"STORAGE_CLASSES",
 		"VOLUME_SNAPSHOT_CLASSES",
 		"CSI_DRIVERS", "OADP_OCP_VERSION",
@@ -66,6 +72,37 @@ var (
 // https://deploy-preview-4185--kubebuilder.netlify.app/plugins/extending/extending_cli_features_and_plugins#example-bollerplate
 // https://github.com/kubernetes-sigs/kubebuilder/tree/master/pkg/machinery
 const summaryTemplate = `# OADP must-gather summary version <<MUST_GATHER_VERSION>>
+
+# Table of Contents
+
+- [Errors](#errors)
+- [Cluster information](#cluster-information)
+- [OADP operator installation information](#oadp-operator-installation-information)
+    - [DataProtectionApplications (DPAs)](#dataprotectionapplications-dpas)
+    - [CloudStorages](#cloudstorages)
+    - [BackupStorageLocations (BSLs)](#backupstoragelocations-bsls)
+    - [VolumeSnapshotLocations (VSLs)](#volumesnapshotlocations-vsls)
+    - [Backups](#backups)
+    - [Restores](#restores)
+    - [Schedules](#schedules)
+    - [BackupRepositories](#backuprepositories)
+    - [DataUploads](#datauploads)
+    - [DataDownloads](#datadownloads)
+    - [PodVolumeBackups](#podvolumebackups)
+    - [PodVolumeRestores](#podvolumerestores)
+    - [DownloadRequests](#downloadrequests)
+    - [DeleteBackupRequests](#deletebackuprequests)
+    - [ServerStatusRequests](#serverstatusrequests)
+    - [NonAdminBackupStorageLocationRequests](#nonadminbackupstoragelocationrequests)
+    - [NonAdminBackupStorageLocations](#nonadminbackupstoragelocations)
+    - [NonAdminBackups](#nonadminbackups)
+    - [NonAdminRestores](#nonadminrestores)
+    - [NonAdminDownloadRequests](#nonadmindownloadrequests)
+- Storage
+    - [Available StorageClasses in cluster](#available-storageclasses-in-cluster)
+    - [Available VolumeSnapshotClasses in cluster](#available-volumesnapshotclasses-in-cluster)
+    - [Available CSIDrivers in cluster](#available-csidrivers-in-cluster)
+- [CustomResourceDefinitions](#customresourcedefinitions)
 
 ## Errors
 
@@ -82,8 +119,6 @@ const summaryTemplate = `# OADP must-gather summary version <<MUST_GATHER_VERSIO
 ## OADP operator installation information
 
 <<OADP_VERSIONS>>
-
-TODO info about where to find pod logs, events, secrets, configmaps, etc
 
 ### DataProtectionApplications (DPAs)
 
@@ -145,9 +180,25 @@ TODO info about where to find pod logs, events, secrets, configmaps, etc
 
 <<SERVER_STATUS_REQUESTS>>
 
-### NAC CRDs
+### NonAdminBackupStorageLocationRequests
 
-TODO once NAC is ready to be used
+<<NON_ADMIN_BACKUP_STORAGE_LOCATION_REQUESTS>>
+
+### NonAdminBackupStorageLocations
+
+<<NON_ADMIN_BACKUP_STORAGE_LOCATIONS>>
+
+### NonAdminBackups
+
+<<NON_ADMIN_BACKUPS>>
+
+### NonAdminRestores
+
+<<NON_ADMIN_RESTORES>>
+
+### NonAdminDownloadRequests
+
+<<NON_ADMIN_DOWNLOAD_REQUESTS>>
 
 ## Available StorageClasses in cluster
 
@@ -247,8 +298,9 @@ func ReplaceOADPOperatorInstallationSection(
 		}
 		summaryTemplateReplaces["OADP_VERSIONS"] += oadpOperatorsText
 		if !foundRelatedProducts {
-			summaryTemplateReplaces["OADP_VERSIONS"] += "No related product was found installed in the cluster"
+			summaryTemplateReplaces["OADP_VERSIONS"] += "No related product was found installed in the cluster\n\n"
 		}
+		summaryTemplateReplaces["OADP_VERSIONS"] += fmt.Sprintf("For information about all objects collected in each namespace, check [`%[1]s/namespaces`](%[1]s/namespaces) folder", outputPath)
 	}
 }
 
@@ -1139,6 +1191,300 @@ func ReplaceServerStatusRequestsSection(outputPath string, serverStatusRequestLi
 	}
 }
 
+func ReplaceNonAdminBackupStorageLocationRequestsSection(outputPath string, nonAdminBackupStorageLocationRequestList *nac1alpha1.NonAdminBackupStorageLocationRequestList) {
+	if nonAdminBackupStorageLocationRequestList != nil && len(nonAdminBackupStorageLocationRequestList.Items) != 0 {
+		nonAdminBackupStorageLocationRequestsByNamespace := map[string][]nac1alpha1.NonAdminBackupStorageLocationRequest{}
+
+		for _, request := range nonAdminBackupStorageLocationRequestList.Items {
+			nonAdminBackupStorageLocationRequestsByNamespace[request.Namespace] = append(nonAdminBackupStorageLocationRequestsByNamespace[request.Namespace], request)
+		}
+
+		summaryTemplateReplaces["NON_ADMIN_BACKUP_STORAGE_LOCATION_REQUESTS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
+		for namespace, requests := range nonAdminBackupStorageLocationRequestsByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/nonadminbackupstoragelocationrequests", namespace)
+			file := folder + "/nonadminbackupstoragelocationrequests.yaml"
+			for _, request := range requests {
+				request.GetObjectKind().SetGroupVersionKind(gvk.NonAdminBackupStorageLocationRequestGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &request})
+
+				requestStatus := ""
+				requestStatusPhase := request.Status.Phase
+				if len(requestStatusPhase) == 0 {
+					requestStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ NonAdminBackupStorageLocationRequest **%v** with **no status phase** in **%v** namespace\n\n",
+						request.Name, namespace,
+					)
+				} else {
+					if requestStatusPhase == nac1alpha1.NonAdminBSLRequestPhaseApproved {
+						requestStatus = fmt.Sprintf("✅ status phase %s", requestStatusPhase)
+					} else if requestStatusPhase == nac1alpha1.NonAdminBSLRequestPhaseRejected {
+						requestStatus = fmt.Sprintf("❌ status phase %s", requestStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ NonAdminBackupStorageLocationRequest **%v** with **status phase %s** in **%v** namespace\n\n",
+							request.Name, requestStatusPhase, namespace,
+						)
+					} else {
+						requestStatus = fmt.Sprintf("⚠️ status phase %s", requestStatusPhase)
+					}
+				}
+
+				link := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["NON_ADMIN_BACKUP_STORAGE_LOCATION_REQUESTS"] += fmt.Sprintf(
+					"| %v | %v | %v | %s |\n",
+					namespace, request.Name, requestStatus, link,
+				)
+			}
+
+			createYAML(outputPath, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["NON_ADMIN_BACKUP_STORAGE_LOCATION_REQUESTS"] = "❌ No NonAdminBackupStorageLocationRequest was found in the cluster"
+	}
+}
+
+func ReplaceNonAdminBackupStorageLocationsSection(outputPath string, nonAdminBackupStorageLocationList *nac1alpha1.NonAdminBackupStorageLocationList) {
+	if nonAdminBackupStorageLocationList != nil && len(nonAdminBackupStorageLocationList.Items) != 0 {
+		nonAdminBackupStorageLocationsByNamespace := map[string][]nac1alpha1.NonAdminBackupStorageLocation{}
+
+		for _, backupStorageLocation := range nonAdminBackupStorageLocationList.Items {
+			nonAdminBackupStorageLocationsByNamespace[backupStorageLocation.Namespace] = append(nonAdminBackupStorageLocationsByNamespace[backupStorageLocation.Namespace], backupStorageLocation)
+		}
+
+		summaryTemplateReplaces["NON_ADMIN_BACKUP_STORAGE_LOCATIONS"] += "| Namespace | Name | Approved | status.phase | yaml |\n| --- | --- | --- | --- | --- |\n"
+		for namespace, backupStorageLocations := range nonAdminBackupStorageLocationsByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/nonadminbackupstoragelocations", namespace)
+			file := folder + "/nonadminbackupstoragelocations.yaml"
+			for _, backupStorageLocation := range backupStorageLocations {
+				backupStorageLocation.GetObjectKind().SetGroupVersionKind(gvk.NonAdminBackupStorageLocationGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &backupStorageLocation})
+
+				bslStatus := ""
+				bslStatusPhase := backupStorageLocation.Status.Phase
+				if len(bslStatusPhase) == 0 {
+					bslStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ NonAdminBackupStorageLocation **%v** with **no status phase** in **%v** namespace\n\n",
+						backupStorageLocation.Name, namespace,
+					)
+				} else {
+					if bslStatusPhase == nac1alpha1.NonAdminPhaseCreated {
+						bslStatus = fmt.Sprintf("✅ status phase %s", bslStatusPhase)
+					} else if bslStatusPhase == nac1alpha1.NonAdminPhaseBackingOff {
+						bslStatus = fmt.Sprintf("❌ status phase %s", bslStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ NonAdminBackupStorageLocation **%v** with **status phase %s** in **%v** namespace\n\n",
+							backupStorageLocation.Name, bslStatusPhase, namespace,
+						)
+					} else {
+						bslStatus = fmt.Sprintf("⚠️ status phase %s", bslStatusPhase)
+					}
+				}
+				bslStatusApproved := ""
+				conditionInNABSL := meta.FindStatusCondition(backupStorageLocation.Status.Conditions, string(nac1alpha1.NonAdminBSLConditionApproved))
+				if conditionInNABSL == nil {
+					bslStatusApproved = "⚠️ no status condition approved"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ NonAdminBackupStorageLocation **%v** with **no status condition approved** in **%v** namespace\n\n",
+						backupStorageLocation.Name, namespace,
+					)
+				} else {
+					if conditionInNABSL.Status == v1.ConditionTrue {
+						bslStatusApproved = fmt.Sprintf("✅ status condition approved %s", conditionInNABSL.Status)
+					} else {
+						bslStatusApproved = fmt.Sprintf("❌ status condition approved %s", conditionInNABSL.Status)
+					}
+				}
+
+				link := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["NON_ADMIN_BACKUP_STORAGE_LOCATIONS"] += fmt.Sprintf(
+					"| %v | %v | %s | %v | %s |\n",
+					namespace, backupStorageLocation.Name, bslStatusApproved, bslStatus, link,
+				)
+			}
+
+			createYAML(outputPath, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["NON_ADMIN_BACKUP_STORAGE_LOCATIONS"] = "❌ No NonAdminBackupStorageLocation was found in the cluster"
+	}
+}
+
+func ReplaceNonAdminBackupsSection(outputPath string, nonAdminBackupList *nac1alpha1.NonAdminBackupList) {
+	if nonAdminBackupList != nil && len(nonAdminBackupList.Items) != 0 {
+		backupsByNamespace := map[string][]nac1alpha1.NonAdminBackup{}
+
+		for _, backup := range nonAdminBackupList.Items {
+			backupsByNamespace[backup.Namespace] = append(backupsByNamespace[backup.Namespace], backup)
+		}
+
+		summaryTemplateReplaces["NON_ADMIN_BACKUPS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
+		for namespace, backups := range backupsByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/nonadminbackups", namespace)
+			file := folder + "/nonadminbackups.yaml"
+			for _, backup := range backups {
+				backup.GetObjectKind().SetGroupVersionKind(gvk.NonAdminBackupGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &backup})
+
+				backupStatus := ""
+				backupStatusPhase := backup.Status.Phase
+				if len(backupStatusPhase) == 0 {
+					backupStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ NonAdminBackup **%v** with **no status phase** in **%v** namespace\n\n",
+						backup.Name, namespace,
+					)
+				} else {
+					if backupStatusPhase == nac1alpha1.NonAdminPhaseCreated {
+						backupStatus = fmt.Sprintf("✅ status phase %s", backupStatusPhase)
+					} else if backupStatusPhase == nac1alpha1.NonAdminPhaseBackingOff {
+						backupStatus = fmt.Sprintf("❌ status phase %s", backupStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ NonAdminBackup **%v** with **status phase %s** in **%v** namespace\n\n",
+							backup.Name, backupStatusPhase, namespace,
+						)
+					} else {
+						backupStatus = fmt.Sprintf("⚠️ status phase %s", backupStatusPhase)
+					}
+				}
+
+				yamlLink := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["NON_ADMIN_BACKUPS"] += fmt.Sprintf(
+					"| %v | %v | %s | %s |\n",
+					namespace, backup.Name,
+					backupStatus,
+					yamlLink,
+				)
+			}
+
+			createYAML(outputPath, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["NON_ADMIN_BACKUPS"] = "❌ No NonAdminBackup was found in the cluster"
+	}
+}
+
+func ReplaceNonAdminRestoresSection(outputPath string, nonAdminRestoreList *nac1alpha1.NonAdminRestoreList) {
+	if nonAdminRestoreList != nil && len(nonAdminRestoreList.Items) != 0 {
+		restoresByNamespace := map[string][]nac1alpha1.NonAdminRestore{}
+
+		for _, restore := range nonAdminRestoreList.Items {
+			restoresByNamespace[restore.Namespace] = append(restoresByNamespace[restore.Namespace], restore)
+		}
+
+		summaryTemplateReplaces["NON_ADMIN_RESTORES"] += "| Namespace | Name | status.phase | describe | logs | yaml |\n| --- | --- | --- | --- | --- | --- |\n"
+		for namespace, restores := range restoresByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/nonadminrestores", namespace)
+			file := folder + "/nonadminrestores.yaml"
+			for _, restore := range restores {
+				restore.GetObjectKind().SetGroupVersionKind(gvk.NonAdminRestoreGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &restore})
+
+				restoreStatus := ""
+				restoreStatusPhase := restore.Status.Phase
+				if len(restoreStatusPhase) == 0 {
+					restoreStatus = "⚠️ no status phase"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ NonAdminRestore **%v** with **no status phase** in **%v** namespace\n\n",
+						restore.Name, namespace,
+					)
+				} else {
+					if restoreStatusPhase == nac1alpha1.NonAdminPhaseCreated {
+						restoreStatus = fmt.Sprintf("✅ status phase %s", restoreStatusPhase)
+					} else if restoreStatusPhase == nac1alpha1.NonAdminPhaseBackingOff {
+						restoreStatus = fmt.Sprintf("❌ status phase %s", restoreStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ NonAdminRestore **%v** with **status phase %s** in **%v** namespace\n\n",
+							restore.Name, restoreStatusPhase, namespace,
+						)
+					} else {
+						restoreStatus = fmt.Sprintf("⚠️ status phase %s", restoreStatusPhase)
+					}
+				}
+
+				yamllink := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["NON_ADMIN_RESTORES"] += fmt.Sprintf(
+					"| %v | %v | %s | %s |\n",
+					namespace, restore.Name,
+					restoreStatus,
+					yamllink,
+				)
+			}
+
+			createYAML(outputPath, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["NON_ADMIN_RESTORES"] = "❌ No NonAdminRestore was found in the cluster"
+	}
+}
+
+func ReplaceNonAdminDownloadRequestsSection(outputPath string, nonAdminDownloadRequestList *nac1alpha1.NonAdminDownloadRequestList) {
+	if nonAdminDownloadRequestList != nil && len(nonAdminDownloadRequestList.Items) != 0 {
+		downloadRequestsByNamespace := map[string][]nac1alpha1.NonAdminDownloadRequest{}
+
+		for _, downloadRequest := range nonAdminDownloadRequestList.Items {
+			downloadRequestsByNamespace[downloadRequest.Namespace] = append(downloadRequestsByNamespace[downloadRequest.Namespace], downloadRequest)
+		}
+
+		summaryTemplateReplaces["NON_ADMIN_DOWNLOAD_REQUESTS"] += "| Namespace | Name | status.phase | yaml |\n| --- | --- | --- | --- |\n"
+		for namespace, downloadRequests := range downloadRequestsByNamespace {
+			list := &corev1.List{}
+			list.GetObjectKind().SetGroupVersionKind(gvk.ListGVK)
+
+			folder := fmt.Sprintf("namespaces/%s/oadp.openshift.io/nonadmindownloadrequests", namespace)
+			file := folder + "/nonadmindownloadrequests.yaml"
+			for _, downloadRequest := range downloadRequests {
+				downloadRequest.GetObjectKind().SetGroupVersionKind(gvk.NonAdminDownloadRequestGVK)
+				list.Items = append(list.Items, runtime.RawExtension{Object: &downloadRequest})
+
+				downloadRequestStatus := ""
+				downloadRequestStatusPhase := downloadRequest.Status.Phase
+				if len(downloadRequestStatusPhase) == 0 {
+					downloadRequestStatus = "⚠️ no status"
+					summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+						"⚠️ NonAdminDownloadRequest **%v** with **no status** in **%v** namespace\n\n",
+						downloadRequest.Name, namespace,
+					)
+				} else {
+					if downloadRequestStatusPhase == nac1alpha1.NonAdminPhaseCreated {
+						downloadRequestStatus = fmt.Sprintf("✅ status phase %s", downloadRequestStatusPhase)
+					} else if downloadRequestStatusPhase == nac1alpha1.NonAdminPhaseBackingOff {
+						downloadRequestStatus = fmt.Sprintf("❌ status phase %s", downloadRequestStatusPhase)
+						summaryTemplateReplaces["ERRORS"] += fmt.Sprintf(
+							"❌ NonAdminDownloadRequest **%v** with **status phase %s** in **%v** namespace\n\n",
+							downloadRequest.Name, downloadRequestStatusPhase, namespace,
+						)
+					} else {
+						downloadRequestStatus = fmt.Sprintf("⚠️ status phase %s", downloadRequestStatusPhase)
+					}
+				}
+
+				link := fmt.Sprintf("[`yaml`](%s)", file)
+				summaryTemplateReplaces["NON_ADMIN_DOWNLOAD_REQUESTS"] += fmt.Sprintf(
+					"| %v | %v | %s | %s |\n",
+					namespace, downloadRequest.Name, downloadRequestStatus, link,
+				)
+			}
+
+			createYAML(outputPath, file, list)
+		}
+	} else {
+		summaryTemplateReplaces["NON_ADMIN_DOWNLOAD_REQUESTS"] = "❌ No NonAdminDownloadRequest was found in the cluster"
+	}
+}
+
 // TODO was not able to create generic replace section function
 
 // TODO this function writes summary and cluster files
@@ -1202,23 +1548,27 @@ func ReplaceCustomResourceDefinitionsSection(outputPath string, clusterConfig *r
 
 	// CRD spec.names.plural : CRD spec.group
 	crds := map[string]string{
-		"dataprotectionapplications": gvk.DataProtectionApplicationGVK.Group,
-		"cloudstorages":              gvk.CloudStorageGVK.Group,
-		"backupstoragelocations":     gvk.BackupStorageLocationGVK.Group,
-		"volumesnapshotlocations":    gvk.VolumeSnapshotLocationGVK.Group,
-		"backups":                    gvk.BackupGVK.Group,
-		"restores":                   gvk.RestoreGVK.Group,
-		"schedules":                  gvk.ScheduleGVK.Group,
-		"backuprepositories":         gvk.BackupRepositoryGVK.Group,
-		"datauploads":                gvk.DataUploadGVK.Group,
-		"datadownloads":              gvk.DataDownloadGVK.Group,
-		"podvolumebackups":           gvk.PodVolumeBackupGVK.Group,
-		"podvolumerestores":          gvk.PodVolumeRestoreGVK.Group,
-		"downloadrequests":           gvk.DownloadRequestGVK.Group,
-		"deletebackuprequests":       gvk.DeleteBackupRequestGVK.Group,
-		"serverstatusrequests":       gvk.ServerStatusRequestGVK.Group,
-		// TODO NAC
-		"clusterserviceversions": gvk.ClusterServiceVersionGVK.Group,
+		"dataprotectionapplications":            gvk.DataProtectionApplicationGVK.Group,
+		"cloudstorages":                         gvk.CloudStorageGVK.Group,
+		"backupstoragelocations":                gvk.BackupStorageLocationGVK.Group,
+		"volumesnapshotlocations":               gvk.VolumeSnapshotLocationGVK.Group,
+		"backups":                               gvk.BackupGVK.Group,
+		"restores":                              gvk.RestoreGVK.Group,
+		"schedules":                             gvk.ScheduleGVK.Group,
+		"backuprepositories":                    gvk.BackupRepositoryGVK.Group,
+		"datauploads":                           gvk.DataUploadGVK.Group,
+		"datadownloads":                         gvk.DataDownloadGVK.Group,
+		"podvolumebackups":                      gvk.PodVolumeBackupGVK.Group,
+		"podvolumerestores":                     gvk.PodVolumeRestoreGVK.Group,
+		"downloadrequests":                      gvk.DownloadRequestGVK.Group,
+		"deletebackuprequests":                  gvk.DeleteBackupRequestGVK.Group,
+		"serverstatusrequests":                  gvk.ServerStatusRequestGVK.Group,
+		"nonadminbackupstoragelocationrequests": gvk.NonAdminBackupStorageLocationRequestGVK.Group,
+		"nonadminbackupstoragelocations":        gvk.NonAdminBackupStorageLocationGVK.Group,
+		"nonadminbackups":                       gvk.NonAdminBackupGVK.Group,
+		"nonadminrestores":                      gvk.NonAdminRestoreGVK.Group,
+		"nonadmindownloadrequests":              gvk.NonAdminDownloadRequestGVK.Group,
+		"clusterserviceversions":                gvk.ClusterServiceVersionGVK.Group,
 	}
 
 	for crdName, crdGroup := range crds {
