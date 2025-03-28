@@ -26,3 +26,6 @@ go get github.com/openshift/oadp-operator@master
 go get github.com/migtools/oadp-non-admin@master
 go get github.com/openshift/oc@release-4.17
 ```
+// in what versions of OCP must must-gather work? be careful about API versions update?
+// be careful about folder structure, otherwise may break `omg` usage. ref https://github.com/openshift/oadp-operator/pull/1269
+// TODO when Velero/OADP API updates, how to handle? use dynamic client instead?
